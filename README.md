@@ -1,0 +1,2 @@
+# wdbots
+WikiData processors
