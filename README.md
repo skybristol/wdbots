@@ -1,4 +1,5 @@
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/skybristol/wdbots/]
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/skybristol/wdbots)
+
 
 # wdbots
 This repo contains projects where I've built processing workflows and bots for WikiData. I've started this via my favored platform for capturing notes and code, Jupyter Notebook. You'll find the following projects in this space:
