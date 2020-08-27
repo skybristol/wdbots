@@ -7,8 +7,8 @@ from pathlib import Path
 import copy
 import geopandas as gpd
 import sys
-from SPARQLWrapper import SPARQLWrapper, JSON
 import pickle
+from wikidataintegrator import wdi_helpers, wdi_core
 
 wd_endpoint_url = "https://query.wikidata.org/sparql"
 
@@ -92,12 +92,20 @@ def get_results(query, wd_endpoint_url=wd_endpoint_url):
     sparql.setReturnFormat(JSON)
     return sparql.query().convert()
 
-def wd_reference_lists(data_path="data_cache", rebuild_cache=False):
-    wd_reference_cache = f"{data_path}/wd_reference_list.pkl"
+def wd_reference_lists(data_path="data_cache", rebuild_cache=False, endpoint="https://query.wikidata.org/sparql"):
+    f_ref_cache_admin = f"{data_path}/ref_cache_admin.pkl"
+    f_ref_cache_eco = f"{data_path}/ref_cache_eco.pkl"
     
-    if os.path.exists(wd_reference_cache) and not rebuild_cache:
-        infile = open(wd_reference_cache, "rb")
-        return pickle.load(infile)
+    if os.path.exists(f_ref_cache_admin) and os.path.exists(f_ref_cache_eco) and not rebuild_cache:
+        infile_ref_cache_admin = open(f_ref_cache_admin, "rb")
+        infile_ref_cache_eco = open(f_ref_cache_eco, "rb")
+        return pickle.load(infile_ref_cache_admin), pickle.load(infile_ref_cache_eco)
+    
+    country_ref = {
+        "US": "Q30",
+        "CA": "Q16",
+        "MX": "Q96"
+    }
     
     q_us_states = '''
     SELECT
@@ -139,25 +147,30 @@ def wd_reference_lists(data_path="data_cache", rebuild_cache=False):
     '''
 
     q_ecoregions = '''
-    SELECT ?item ?itemLabel WHERE {
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
-          {?item wdt:P31 wd:Q52111338.}
-          UNION
-          {?item wdt:P31 wd:Q52111409.}
+    SELECT ?item ?itemLabel ?itemDescription
+    (GROUP_CONCAT(DISTINCT(?altLabel); separator = ",") AS ?altLabel_list) 
+    WHERE {
+      {?item wdt:P31 wd:Q52111338.}
+      UNION
+      {?item wdt:P31 wd:Q52111409.}
+      OPTIONAL { ?item skos:altLabel ?altLabel . FILTER (lang(?altLabel) = "en") }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
     }
+    GROUP BY ?item ?itemLabel ?itemDescription
     '''
 
-    r_us_states = get_results(q_us_states)
-    r_us_counties = get_results(q_us_counties)
-    r_mx_states = get_results(q_mx_states)
-    r_ca_states = get_results(q_ca_states)
-    r_ecoregions = get_results(q_ecoregions)
+    r_us_states = wdi_core.WDItemEngine.execute_sparql_query(q_us_states, endpoint=endpoint)
+    r_us_counties = wdi_core.WDItemEngine.execute_sparql_query(q_us_counties, endpoint=endpoint)
+    r_mx_states = wdi_core.WDItemEngine.execute_sparql_query(q_mx_states, endpoint=endpoint)
+    r_ca_states = wdi_core.WDItemEngine.execute_sparql_query(q_ca_states, endpoint=endpoint)
+    r_ecoregions = wdi_core.WDItemEngine.execute_sparql_query(q_ecoregions, endpoint=endpoint)
     
-    full_results = list()
-    full_results.extend(
+    ref_cache_admin = list()
+    ref_cache_admin.extend(
         [
             {
                 "category": "US",
+                "country": country_ref["US"],
                 "id": i["value"]["value"],
                 "wd_id": i["item"]["value"].split("/")[-1],
                 "label": i["itemLabel"]["value"]
@@ -165,10 +178,11 @@ def wd_reference_lists(data_path="data_cache", rebuild_cache=False):
             for i in r_us_states["results"]["bindings"]
         ]
     )
-    full_results.extend(
+    ref_cache_admin.extend(
         [
             {
                 "category": "US",
+                "country": country_ref["US"],
                 "id": i["value"]["value"],
                 "wd_id": i["item"]["value"].split("/")[-1],
                 "label": i["itemLabel"]["value"]
@@ -176,10 +190,11 @@ def wd_reference_lists(data_path="data_cache", rebuild_cache=False):
             for i in r_us_counties["results"]["bindings"]
         ]
     )
-    full_results.extend(
+    ref_cache_admin.extend(
         [
             {
                 "category": "MX",
+                "country": country_ref["MX"],
                 "id": i["value"]["value"],
                 "wd_id": i["item"]["value"].split("/")[-1],
                 "label": i["itemLabel"]["value"]
@@ -187,44 +202,51 @@ def wd_reference_lists(data_path="data_cache", rebuild_cache=False):
             for i in r_mx_states["results"]["bindings"]
         ]
     )
-    full_results.extend(
+    ref_cache_admin.extend(
         [
             {
                 "category": "CA",
+                "country": country_ref["CA"],
                 "wd_id": i["item"]["value"].split("/")[-1],
                 "label": i["itemLabel"]["value"]
             } 
             for i in r_ca_states["results"]["bindings"]
         ]
     )
-    full_results.extend(
-        [
+
+    ref_cache_eco = [
             {
                 "category": "Ecoregions",
                 "wd_id": i["item"]["value"].split("/")[-1],
-                "label": i["itemLabel"]["value"]
+                "label": i["itemLabel"]["value"],
+                "alt_labels": i["altLabel_list"]["value"].split(",")
             } 
             for i in r_ecoregions["results"]["bindings"]
         ]
-    )
     
-    outfile = open(wd_reference_cache, "wb")
-    pickle.dump(full_results, outfile)
+    outfile = open(f_ref_cache_admin, "wb")
+    pickle.dump(ref_cache_admin, outfile)
+    outfile.close()
+    outfile = open(f_ref_cache_eco, "wb")
+    pickle.dump(ref_cache_eco, outfile)
     outfile.close()
 
-    return full_results
+    return ref_cache_admin, ref_cache_eco
 
-def lookup_wd(category, name, identifier):
-    wd_references = wd_reference_lists()
-    
-    relevant_item = None
+def lookup_wd(identifier):
+    existing_wd_items = wd_reference_lists()[1]
+    return next((i["wd_id"] for i in existing_wd_items if str(identifier) in i["alt_labels"]), None)
+
+def lookup_admin_ref(category, label, identifier, return_var="wd_id"):
+    existing_wd_items = wd_reference_lists()[0]
     
     if identifier is not None:
-        relevant_item = next((i for i in wd_references if i["id"] == str(identifier)), None)
+        return next((i[return_var] for i in existing_wd_items if i["id"] == str(identifier)), None)
     else:
-        relevant_item = next((i for i in wd_references if i["category"] == category and i["label"] == name), None)
-    
-    if relevant_item is None:
-        return None
-    
-    return relevant_item["wd_id"].split("/")[-1]
+        return next(
+            (
+                i[return_var] for i in existing_wd_items 
+                if i["category"] == category
+                and i["label"] == label
+            ), None
+        )
